@@ -1,0 +1,87 @@
+dataset:
+  backend: lerobot
+  lerobot:
+    action_key: action
+    decode_video: true
+    episode_cache_size: 16
+    frame_key: observation.images.image
+    states_key: observation.state
+    use_stats_norm: true
+  split:
+    val_ratio: 0.1
+model:
+  action_dim: 4
+  action_history: 16
+  action_horizon: 8
+  dino_in_dim: 1024
+  dropout: 0.1
+  flow_hidden_dim: 1024
+  flow_num_layers: 4
+  flow_solver_steps: 24
+  flow_time_embed_dim: 128
+  jepa_history: 4
+  jepa_in_dim: 1024
+  jepa_predictor_layers: 6
+  jepa_state_dim: 4
+  lambda_jepa_latent: 0.05
+  model_dim: 512
+  num_dino_tokens: 4
+  num_heads: 8
+  num_jepa_action_tokens: 8
+  rtc_execute_steps: 4
+  rtc_execution_horizon: 4
+  rtc_max_guidance_weight: 10.0
+  state_history: 16
+  vl_guidance_dropout: 0.1
+  vl_in_dim: 2048
+runtime:
+  device: cuda
+  eval_batches: 50
+  grad_clip_norm: 1.0
+  log_every: 100
+  num_workers: 1
+  outdir: outputs
+  precision: bf16
+  save_every: 5000
+  seed: 42
+stages:
+  A:
+    eval_every_steps: 5000
+    global_batch_size: 16
+    loss:
+      lambda_jepa_latent: 1.0
+      optimize_flow: false
+      optimize_jepa_latent: true
+    optimizer:
+      lr_backbone: 5.0e-05
+      lr_main: 0.0002
+      weight_decay: 0.05
+    steps: 250000
+  B:
+    eval_every_steps: 5000
+    global_batch_size: 16
+    loss:
+      lambda_jepa_latent: 0.05
+      optimize_flow: true
+      optimize_jepa_latent: true
+    optimizer:
+      lr_backbone: 1.0e-05
+      lr_main: 0.0002
+      weight_decay: 0.05
+    steps: 200000
+  C:
+    eval_every_steps: 5000
+    global_batch_size: 16
+    loss:
+      lambda_jepa_latent: 0.02
+      optimize_flow: true
+      optimize_jepa_latent: true
+    optimizer:
+      lr_backbone: 1.0e-05
+      lr_main: 5.0e-05
+      weight_decay: 0.05
+    steps: 150000
+task_filter:
+  hard_tasks_json: ''
+  level: hard
+  mt50_order_json: ''
