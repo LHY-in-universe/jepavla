@@ -22,6 +22,7 @@ class VLAConfig:
 
     # DINO path
     dino_in_dim: int = 1024
+    use_dino: bool = True
 
     # Token counts for segmented fusion sequence
     num_jepa_action_tokens: int = 8

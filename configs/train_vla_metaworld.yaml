@@ -14,6 +14,7 @@ model:
   action_history: 16
   action_horizon: 8
   dino_in_dim: 1024
+  use_dino: false
   dropout: 0.1
   flow_hidden_dim: 1024
   flow_num_layers: 4

@@ -77,6 +77,7 @@ class ThinkJEPAVLAModel(nn.Module):
         self.jepa_visual_proj = nn.Linear(config.jepa_in_dim, d)
         self.state_proj = nn.Linear(config.jepa_state_dim, d)
         self.action_hist_proj = nn.Linear(config.action_dim, d)
+        self.use_dino = getattr(config, "use_dino", True)
         self.vl_proj = nn.Linear(config.vl_in_dim, d)
         self.dino_proj = nn.Linear(config.dino_in_dim, d)
         self.vl_dropout = nn.Dropout(config.vl_guidance_dropout)
@@ -165,19 +166,26 @@ class ThinkJEPAVLAModel(nn.Module):
         ssep = self.special_ssep.expand(bsz, -1, -1)
         aq = self.action_query_tokens[None].expand(bsz, -1, -1)
 
-        cond = torch.cat([bos, jsep, z_jepa, dsep, z_dino, ssep, state_token, aq], dim=1)
-
-        seg_ids = torch.cat(
-            [
-                torch.zeros(1 + 1, device=cond.device, dtype=torch.long),  # bos, jsep
-                torch.ones(z_jepa.shape[1], device=cond.device, dtype=torch.long),  # jepa
-                torch.full((1,), 0, device=cond.device, dtype=torch.long),  # dsep
-                torch.full((z_dino.shape[1],), 2, device=cond.device, dtype=torch.long),  # dino
-                torch.full((1,), 0, device=cond.device, dtype=torch.long),  # ssep
-                torch.full((state_token.shape[1],), 3, device=cond.device, dtype=torch.long),  # state
-                torch.full((aq.shape[1],), 4, device=cond.device, dtype=torch.long),  # aq
-            ]
-        )
+        if z_dino.shape[1] > 0:
+            cond = torch.cat([bos, jsep, z_jepa, dsep, z_dino, ssep, state_token, aq], dim=1)
+            seg_ids = torch.cat([
+                torch.zeros(2, device=cond.device, dtype=torch.long),       # bos, jsep
+                torch.ones(z_jepa.shape[1], device=cond.device, dtype=torch.long),
+                torch.zeros(1, device=cond.device, dtype=torch.long),       # dsep
+                torch.full((z_dino.shape[1],), 2, device=cond.device, dtype=torch.long),
+                torch.zeros(1, device=cond.device, dtype=torch.long),       # ssep
+                torch.full((state_token.shape[1],), 3, device=cond.device, dtype=torch.long),
+                torch.full((aq.shape[1],), 4, device=cond.device, dtype=torch.long),
+            ])
+        else:
+            cond = torch.cat([bos, jsep, z_jepa, ssep, state_token, aq], dim=1)
+            seg_ids = torch.cat([
+                torch.zeros(2, device=cond.device, dtype=torch.long),       # bos, jsep
+                torch.ones(z_jepa.shape[1], device=cond.device, dtype=torch.long),
+                torch.zeros(1, device=cond.device, dtype=torch.long),       # ssep
+                torch.full((state_token.shape[1],), 3, device=cond.device, dtype=torch.long),
+                torch.full((aq.shape[1],), 4, device=cond.device, dtype=torch.long),
+            ])
         cond = cond + self.segment_embed(seg_ids)[None]
         cond = self.cond_encoder(cond)
         aq_start = cond.shape[1] - self.config.action_horizon
@@ -202,8 +210,11 @@ class ThinkJEPAVLAModel(nn.Module):
         jepa_memory = torch.cat([guided_tokens, pred_future_latent], dim=1)
         z_jepa = _cross_pool(self.jepa_action_queries, jepa_memory, self.jepa_action_attn)
 
-        dino_tokens = self.dino_proj(batch["dino_current"])
-        z_dino = _cross_pool(self.dino_queries, dino_tokens, self.dino_attn)
+        if self.use_dino:
+            dino_tokens = self.dino_proj(batch["dino_current"])
+            z_dino = _cross_pool(self.dino_queries, dino_tokens, self.dino_attn)
+        else:
+            z_dino = torch.zeros(jepa_tokens.shape[0], 0, d, device=jepa_tokens.device, dtype=jepa_tokens.dtype)
 
         state_token = self.state_proj(batch["state_hist"][:, -1:, :])
         cond_tokens, aq_tokens = self._build_cond_tokens(z_jepa=z_jepa, z_dino=z_dino, state_token=state_token)

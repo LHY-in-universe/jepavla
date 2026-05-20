@@ -65,9 +65,6 @@ def configure_training_stage(model: ThinkJEPAVLAModel, stage: str) -> None:
             [
                 model.jepa_action_attn,
                 model.jepa_action_queries,
-                model.dino_proj,
-                model.dino_attn,
-                model.dino_queries,
                 model.cond_encoder,
                 model.segment_embed,
                 model.special_bos,
@@ -78,6 +75,8 @@ def configure_training_stage(model: ThinkJEPAVLAModel, stage: str) -> None:
                 model.flow_head,
             ]
         )
+        if model.use_dino:
+            train_modules += _modules([model.dino_proj, model.dino_attn, model.dino_queries])
     else:
         # C: keep almost all trainable for joint fine-tuning.
         train_modules = [model]
