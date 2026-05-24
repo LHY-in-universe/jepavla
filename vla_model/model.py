@@ -89,6 +89,7 @@ class ThinkJEPAVLAModel(nn.Module):
             ]
         )
         self.film_mlps = nn.ModuleList([nn.Linear(d, 2 * d) for _ in range(config.jepa_predictor_layers)])
+        self.predictor_out_norm = nn.LayerNorm(d)
 
         self.future_queries = nn.Parameter(torch.randn(config.action_horizon, d) * (d**-0.5))
         self.future_decoder_attn = nn.MultiheadAttention(d, config.num_heads, batch_first=True)
@@ -106,6 +107,7 @@ class ThinkJEPAVLAModel(nn.Module):
         self.special_ssep = nn.Parameter(torch.randn(1, 1, d) * (d**-0.5))
         self.action_query_tokens = nn.Parameter(torch.randn(config.action_horizon, d) * (d**-0.5))
         self.segment_embed = nn.Embedding(5, d)
+        self.cond_out_norm = nn.LayerNorm(d)
         self.cond_encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=d,
@@ -156,7 +158,7 @@ class ThinkJEPAVLAModel(nn.Module):
         for block, film_mlp in zip(self.predictor_blocks, self.film_mlps):
             gamma, beta = film_mlp(g).chunk(2, dim=-1)
             x = block(x, gamma=gamma, beta=beta)
-        return x
+        return self.predictor_out_norm(x)
 
     def _build_cond_tokens(self, z_jepa: Tensor, z_dino: Tensor, state_token: Tensor) -> tuple[Tensor, Tensor]:
         bsz = z_jepa.shape[0]
@@ -188,6 +190,7 @@ class ThinkJEPAVLAModel(nn.Module):
             ])
         cond = cond + self.segment_embed(seg_ids)[None]
         cond = self.cond_encoder(cond)
+        cond = self.cond_out_norm(cond)
         aq_start = cond.shape[1] - self.config.action_horizon
         aq_tokens = cond[:, aq_start:, :]
         return cond, aq_tokens
@@ -214,7 +217,8 @@ class ThinkJEPAVLAModel(nn.Module):
             dino_tokens = self.dino_proj(batch["dino_current"])
             z_dino = _cross_pool(self.dino_queries, dino_tokens, self.dino_attn)
         else:
-            z_dino = torch.zeros(jepa_tokens.shape[0], 0, d, device=jepa_tokens.device, dtype=jepa_tokens.dtype)
+            d_model = self.config.model_dim
+            z_dino = torch.zeros(jepa_tokens.shape[0], 0, d_model, device=jepa_tokens.device, dtype=jepa_tokens.dtype)
 
         state_token = self.state_proj(batch["state_hist"][:, -1:, :])
         cond_tokens, aq_tokens = self._build_cond_tokens(z_jepa=z_jepa, z_dino=z_dino, state_token=state_token)

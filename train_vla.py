@@ -359,8 +359,11 @@ def main() -> int:
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu")
-        model.load_state_dict(ckpt["model"], strict=True)
-        optimizer.load_state_dict(ckpt["optimizer"])
+        model.load_state_dict(ckpt["model"], strict=False)
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        except ValueError:
+            print(f"[resume] Optimizer state mismatch (cross-stage), starting fresh optimizer")
 
     precision = str(runtime_cfg.get("precision", "bf16")).lower()
     if device.type == "cuda" and precision == "bf16":

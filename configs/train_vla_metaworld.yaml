@@ -66,8 +66,8 @@ stages:
       optimize_flow: true
       optimize_jepa_latent: true
     optimizer:
-      lr_backbone: 1.0e-05
-      lr_main: 0.0002
+      lr_backbone: 5.0e-06
+      lr_main: 5.0e-05
       weight_decay: 0.05
     steps: 200000
   C:
