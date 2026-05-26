@@ -219,3 +219,44 @@ python3 eval_metaworld_online.py \
 - 报 `No episodes found`：检查 `--dataset-backend` 是否和数据格式匹配。
 - 报 `No valid episodes after filtering`：检查 `--task-level` / `--hard-tasks-json` 过滤条件。
 - online eval 报 `metaworld is not installed`：先安装 `metaworld`。
+
+## Stage C 坍缩问题（已知陷阱）
+
+### 现象
+
+Stage C 训练到 ~70k 步时，JEPA latent loss 从 0.165 骤降到 0.0004（400x 降幅），此后持续为 ~0.00003。与此同时 flow loss 波动增大，eval flow 从 0.018 恶化到 0.016~0.074。最终模型在 MetaWorld 在线评估中成功率 0%。
+
+### 根因
+
+**Stage C 错误地解冻了 JEPA 骨干投影层。** `train_stages.py` 中 Stage C 代码为：
+
+```python
+else:  # C
+    train_modules = [model]  # 解冻全部模块，包括 jepa_visual_proj / state_proj / action_hist_proj
+```
+
+这三个投影层在 Stage A 和 Stage B 全程冻结，保留了 EvoJEPA 预训练的表征质量。一旦解冻，flow loss 梯度直接作用其上，引发坍缩。
+
+**坍缩是梯度竞争的结果：**
+
+1. Flow head 有 17.2M 参数，JEPA predictor 仅 ~5M，梯度流量不在一个量级
+2. `lambda_jepa_latent=0.02` 意味着 flow loss 权重是 latent loss 的 **50 倍**
+3. Predictor 找到了最小阻力路径：输出 `target_future_latent` 的训练集均值，MSE 接近零
+4. z_jepa 退化为常数后，cond_tokens 只剩下 state token 携带信息，flow head 在盲训
+
+**死亡螺旋**：predictor → 均值 → latent loss 变小 → latent 梯度变小 → 更容易被 flow 梯度拉偏 → 更接近均值 → ...
+
+### 时间线（实测）
+
+| Step | Eval Latent | 阶段 |
+|------|------------|------|
+| 0-20k | 0.209→0.208 | 缓慢下降，正常微调 |
+| 20k-60k | 0.208→0.178 | 加速下降，predictor 开始找捷径 |
+| 60k-70k | 0.178→0.0004 | 灾难性坍缩 |
+| 70k-150k | ~0.00003 | 彻底死亡，不可恢复 |
+
+### 修复方向
+
+1. **冻结 JEPA 骨干投影层**：`jepa_visual_proj`、`state_proj`、`action_hist_proj` 在 Stage C 保持冻结（`requires_grad=False`），只训 predictor + FiLM + cond_encoder + flow_head
+2. **提高 `lambda_jepa_latent`**：从 0.02 提高到 0.1~0.5，让 latent loss 有足够力量抵抗 flow 梯度
+3. 从 Stage B checkpoint 重新启动，不要 resume 已坍缩的 Stage C checkpoint

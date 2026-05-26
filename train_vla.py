@@ -221,6 +221,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     stage_cfg: Dict,
     model_cfg: VLAConfig,
+    keep: int = 2,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     ckpt = {
@@ -231,6 +232,10 @@ def save_checkpoint(
         "model_cfg": model_cfg.__dict__,
     }
     torch.save(ckpt, outdir / f"ckpt_step_{step:07d}.pt")
+    # Keep only the N most recent checkpoints
+    ckpts = sorted(outdir.glob("ckpt_step_*.pt"), key=lambda p: p.stat().st_mtime)
+    for old in ckpts[:-keep]:
+        old.unlink()
 
 
 def main() -> int:
