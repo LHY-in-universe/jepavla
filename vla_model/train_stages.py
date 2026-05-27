@@ -78,8 +78,33 @@ def configure_training_stage(model: ThinkJEPAVLAModel, stage: str) -> None:
         if model.use_dino:
             train_modules += _modules([model.dino_proj, model.dino_attn, model.dino_queries])
     else:
-        # C: keep almost all trainable for joint fine-tuning.
-        train_modules = [model]
+        # C: joint fine-tune everything EXCEPT JEPA backbone projections.
+        # jepa_visual_proj / state_proj / action_hist_proj must stay frozen —
+        # unfreezing them causes predictor collapse (flow gradients dominate
+        # latent loss 50:1 and destroy pretrained representations).
+        train_modules = _modules(
+            [
+                model.predictor_blocks,
+                model.film_mlps,
+                model.vl_proj,
+                model.future_decoder_attn,
+                model.future_out,
+                model.predictor_out_norm,
+                model.jepa_action_attn,
+                model.jepa_action_queries,
+                model.cond_encoder,
+                model.cond_out_norm,
+                model.segment_embed,
+                model.special_bos,
+                model.special_jsep,
+                model.special_dsep,
+                model.special_ssep,
+                model.action_query_tokens,
+                model.flow_head,
+            ]
+        )
+        if model.use_dino:
+            train_modules += _modules([model.dino_proj, model.dino_attn, model.dino_queries])
 
     for module in train_modules:
         if isinstance(module, nn.Parameter):
