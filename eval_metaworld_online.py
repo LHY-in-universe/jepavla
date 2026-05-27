@@ -6,7 +6,7 @@ import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
@@ -17,6 +17,7 @@ from vla_model.schema import VLAConfig
 from vla_model.model import ThinkJEPAVLAModel
 from vla_model.rtc import RTCConfig, RTCExecutor
 from vla_model.task_splits import EVO1_HARD_TASKS, load_evo1_level_tasks
+from vla_model.metaworld_dataset import RandomProjectionFeatureizer
 
 # Qwen3-VL: layers extracted during training (spread across 28-layer LLM)
 FEATURE_LAYERS = [7, 14, 21, 27]
@@ -34,7 +35,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episodes-per-task", type=int, default=10)
     p.add_argument("--max-steps-per-episode", type=int, default=500)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--rtc-execute-steps", type=int, default=4)
     p.add_argument("--rtc-execution-horizon", type=int, default=4)
     p.add_argument("--rtc-max-guidance-weight", type=float, default=10.0)
@@ -71,12 +71,10 @@ def _build_model(model_cfg_path: str, checkpoint_path: str, device: torch.device
 
 
 def _load_qwen_vl(device: torch.device):
-    import os
     from pathlib import Path
     from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
     print("[eval] Loading Qwen3-VL-2B-Instruct ...")
-    # Use local cache path directly to avoid network issues
     cache_dir = Path.home() / ".cache/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots"
     snapshots = sorted(cache_dir.glob("*"))
     if not snapshots:
@@ -122,27 +120,12 @@ def _extract_vl_features(
     img_mask = (inputs["input_ids"][0] == img_token_id)
     layer_feats = []
     for layer_idx in FEATURE_LAYERS:
-        h = outputs.hidden_states[layer_idx]           # [1, T, 2048]
-        img_feats = h[0, img_mask, :]                   # [225, 2048]
-        pooled = img_feats.mean(dim=0)                  # [2048]
+        h = outputs.hidden_states[layer_idx]
+        img_feats = h[0, img_mask, :]
+        pooled = img_feats.mean(dim=0)
         layer_feats.append(pooled.float())
 
     return torch.stack(layer_feats)  # [4, 2048]
-
-
-def _resize_image(image: np.ndarray, size: int) -> np.ndarray:
-    h, w = image.shape[:2]
-    ys = (np.linspace(0, h - 1, size)).astype(np.int64)
-    xs = (np.linspace(0, w - 1, size)).astype(np.int64)
-    return image[np.ix_(ys, xs)]
-
-
-def _patchify(frames: torch.Tensor, out_dim: int, patch_size: int = 16) -> torch.Tensor:
-    x = frames.permute(0, 3, 1, 2).contiguous()
-    unfold = torch.nn.Unfold(kernel_size=patch_size, stride=patch_size)
-    p = unfold(x).transpose(1, 2)
-    proj = torch.randn(p.shape[-1], out_dim, device=p.device, dtype=p.dtype) / np.sqrt(p.shape[-1])
-    return p @ proj
 
 
 @dataclass
@@ -192,6 +175,11 @@ def run_eval(args: argparse.Namespace) -> Dict:
         ),
     )
 
+    # Use the SAME RandomProjectionFeatureizer as training (seed=42).
+    # This ensures jepa_tokens and dino_tokens use the same fixed
+    # random projection matrices the model was trained on.
+    featureizer = RandomProjectionFeatureizer(mcfg, patch_size=16, seed=42, device=device.type)
+
     qwen_model, qwen_processor = _load_qwen_vl(device)
 
     mt = _make_envs()
@@ -235,9 +223,11 @@ def run_eval(args: argparse.Namespace) -> Dict:
                 if step_idx % VL_STRIDE == 0:
                     vl_features = _extract_vl_features(qwen_model, qwen_processor, frame, device)
 
-                frame = _resize_image(frame, args.image_size).astype(np.float32) / 255.0
+                # IMPORTANT: Do NOT resize — training decodes video at native 480x480.
+                # Unfold(16x16) on 480x480 gives 900 patches, matching training.
+                frame_t = torch.from_numpy(frame.astype(np.float32) / 255.0).to(device)
                 state = np.asarray([obs[0], obs[1], obs[2], obs[7]], dtype=np.float32)
-                buf.images.append(frame)
+                buf.images.append(frame_t)
                 buf.states.append(state)
                 buf.actions.append(prev_action.copy())
 
@@ -253,20 +243,20 @@ def run_eval(args: argparse.Namespace) -> Dict:
                         break
                     continue
 
-                imgs = torch.tensor(np.stack(list(buf.images), axis=0), dtype=torch.float32, device=device)
-                states = torch.tensor(np.stack(list(buf.states), axis=0), dtype=torch.float32, device=device)
-                actions = torch.tensor(np.stack(list(buf.actions), axis=0), dtype=torch.float32, device=device)
+                imgs = torch.stack(list(buf.images))
+                states_t = torch.tensor(np.stack(list(buf.states), axis=0), dtype=torch.float32, device=device)
+                actions_t = torch.tensor(np.stack(list(buf.actions), axis=0), dtype=torch.float32, device=device)
 
                 frames_hist = imgs[-mcfg.jepa_history:]
                 frame_cur = imgs[-1:]
 
-                jepa_visual = _patchify(frames_hist, mcfg.jepa_in_dim)
-                dino_current = _patchify(frame_cur, mcfg.dino_in_dim)[0]
+                jepa_visual = featureizer.build_jepa_tokens(frames_hist)
+                dino_current = featureizer.build_dino_tokens(frame_cur)[0]
 
                 batch = {
                     "jepa_visual": jepa_visual.unsqueeze(0),
-                    "state_hist": states[-mcfg.state_history:].unsqueeze(0),
-                    "action_hist": actions[-mcfg.action_history:].unsqueeze(0),
+                    "state_hist": states_t[-mcfg.state_history:].unsqueeze(0),
+                    "action_hist": actions_t[-mcfg.action_history:].unsqueeze(0),
                     "dino_current": dino_current.unsqueeze(0),
                     "vl_features": vl_features.unsqueeze(0),
                 }
