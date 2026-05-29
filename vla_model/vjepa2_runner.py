@@ -27,6 +27,7 @@ class NativeVJEPA2Model(nn.Module):
         self.model = HFVJEPA2.from_pretrained(
             "facebook/vjepa2-vitl-fpc64-256",
             torch_dtype=dtype,
+            local_files_only=True,
         )
         self.model.eval()
 
