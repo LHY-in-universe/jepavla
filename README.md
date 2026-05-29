@@ -1,84 +1,118 @@
-# VL-Guided JEPA VLA (Flow Matching + RTC)
+# VL-Guided JEPA VLA (RTC-Aligned)
 
-这是一个面向 MetaWorld 的 VLA 训练与评测项目，核心目标是实现：
+这是一个面向 MetaWorld 的 VLA 训练与在线评测项目。当前代码已经完成一轮结构重构，目标是：
 
-- `VL` 语义指导 `JEPA`（FiLM 注入 predictor）
-- `JEPA2AC` 与 `DINO` 并行建模
-- `Flow Matching` 动作头生成 action chunk
-- `RTC`（Real-Time Chunking）在线执行时每次执行半个 chunk 并重规划
+- `VL` 低频调控 `JEPA predictor`
+- `JEPA` 输出 `z_jepa` 主控 action head
+- `RTC` 按固定时钟做 chunk 执行和重规划
+- 训练、验证、在线评测共用同一套时序合同
 
-## 项目概览
+## 当前状态
 
-### 方法结构
+### 已完成
 
-在控制时刻 `t`：
+- 新时序合同已经落地：
+  - 主帧率：`30 FPS`
+  - 每帧执行 `2` 个动作
+  - `VL tick`：每 `90` 帧一次
+  - `JEPA tick`：每 `10` 帧一次
+  - `JEPA window`：最近 `30` 帧图像
+  - sparse robot history：`t-30 / t-20 / t-10 / t-1` 的图像、state、action
+  - action horizon：预测未来 `30` 个动作步
+  - RTC：每次执行前 `20` 个动作步，保留后 `10` 个动作步用于下一轮重规划融合
 
-- JEPA 输入：过去 3 帧 + 当前帧，状态历史，动作历史
-- DINO 输入：当前帧
-- VL thinker 输入：稀疏长时序帧 + 指令（当前代码里是特征接口）
+- 数据集接口已经切换到新 batch 结构：
+  - `context_frames`
+  - `sparse_hist_images`
+  - `sparse_hist_states`
+  - `sparse_hist_actions`
+  - `target_actions`
+  - `frame_idx / action_step_idx / jepa_tick_idx`
 
-融合后进入 ActionHead，使用 Flow Matching 学习速度场：
+- 模型接口已经切换到新结构：
+  - 显式 `z_jepa`
+  - `VL` 只进入 predictor adapter
+  - action head 显式由 `z_jepa` 驱动
 
-- 训练：`v_theta(x_tau, tau | cond_tokens)` 拟合 `u_tau = a_target - eps`
-- 推理：从噪声出发 ODE 积分得到动作 chunk
+- `RTCExecutor` 已改成 `predict 30 / execute 20 / leftover 10`
 
-在线执行使用 RTC：
+- [train_vla.py](/Users/lhy/Desktop/jepavla/train_vla.py) 和 [eval_metaworld_online.py](/Users/lhy/Desktop/jepavla/eval_metaworld_online.py) 已切到新接口
 
-- chunk 长度默认 `H=8`
-- 每次执行前半段 `E=4`
-- 使用上一个 chunk 剩余动作做前缀平滑
+### 还没有完成
 
-### 代码结构
+**真实 `vjepa2` 后端还没有接入。**
 
-- [train_vla.py](/Users/lhy/Desktop/jepavla/train_vla.py): 统一训练入口（A/B/C）
-- [eval_metaworld_online.py](/Users/lhy/Desktop/jepavla/eval_metaworld_online.py): 在线环境评测（success rate）
-- [configs/train_vla_metaworld.yaml](/Users/lhy/Desktop/jepavla/configs/train_vla_metaworld.yaml): 唯一训练配置文件
-- [vla_model/model.py](/Users/lhy/Desktop/jepavla/vla_model/model.py): 主模型组装
-- [vla_model/flow_action_head.py](/Users/lhy/Desktop/jepavla/vla_model/flow_action_head.py): FM 动作头
+当前仓库里没有本地可直接调用的 `vjepa2` 实现，因此代码里新增了：
+
+- [vla_model/vjepa2_runner.py](/Users/lhy/Desktop/jepavla/vla_model/vjepa2_runner.py)
+
+它目前有两种模式：
+
+- `allow_mock_runner: true`
+  - 使用一个 mock JEPA runner，让训练/评测链路先跑通
+- `allow_mock_runner: false`
+  - 要求你提供真实 `vjepa2` 本地实现，否则会直接报错
+
+也就是说：
+
+- 现在的代码结构、时钟、接口都已经是新设计
+- 但如果不接入真实 `vjepa2`，当前训练跑的仍然不是原生 `vjepa2`
+
+## 代码结构
+
+- [train_vla.py](/Users/lhy/Desktop/jepavla/train_vla.py): 统一训练入口
+- [eval_metaworld_online.py](/Users/lhy/Desktop/jepavla/eval_metaworld_online.py): 在线 MetaWorld 评测
+- [configs/train_vla_metaworld.yaml](/Users/lhy/Desktop/jepavla/configs/train_vla_metaworld.yaml): 当前唯一训练配置
+- [vla_model/schema.py](/Users/lhy/Desktop/jepavla/vla_model/schema.py): 主配置 dataclass
+- [vla_model/scheduler.py](/Users/lhy/Desktop/jepavla/vla_model/scheduler.py): 统一时钟和 tick 规则
+- [vla_model/vjepa2_runner.py](/Users/lhy/Desktop/jepavla/vla_model/vjepa2_runner.py): `vjepa2` 抽象层
+- [vla_model/model.py](/Users/lhy/Desktop/jepavla/vla_model/model.py): 主模型
+- [vla_model/flow_action_head.py](/Users/lhy/Desktop/jepavla/vla_model/flow_action_head.py): 动作头
 - [vla_model/rtc.py](/Users/lhy/Desktop/jepavla/vla_model/rtc.py): RTC 执行器
 - [vla_model/metaworld_dataset.py](/Users/lhy/Desktop/jepavla/vla_model/metaworld_dataset.py): `npz` 数据后端
 - [vla_model/lerobot_metaworld_dataset.py](/Users/lhy/Desktop/jepavla/vla_model/lerobot_metaworld_dataset.py): LeRobot 数据后端
-- [vla_model/task_splits.py](/Users/lhy/Desktop/jepavla/vla_model/task_splits.py): `hard` 任务切分
-- [vla_model/schema.py](/Users/lhy/Desktop/jepavla/vla_model/schema.py): Python dataclass（模型参数结构定义，不是训练配置）
 
-## 训练配置（统一）
+## 当前时序合同
 
-本项目运行时配置只用一个文件：
+系统显式区分：
 
-- [configs/train_vla_metaworld.yaml](/Users/lhy/Desktop/jepavla/configs/train_vla_metaworld.yaml)
+- `frame`: 图像帧
+- `action_step`: 动作步
+- `planning tick`: JEPA 重规划时刻
 
-包含：
+固定换算：
 
-- `model`: 模型结构参数
-- `dataset`: 数据后端与字段映射
-- `task_filter`: hard/all 等任务过滤
-- `runtime`: device/worker/log/save 等
-- `stages`: A/B/C 三阶段超参数（steps、lr、loss）
+- `1 frame = 2 action_step`
+- `1 JEPA tick = 10 frames = 20 action_step`
+- `1 VL tick = 90 frames = 180 action_step`
+- `action horizon = 30 action_step`
 
-命令通过 `--stage A|B|C` 选择对应阶段。
+因此当前 RTC 行为是：
+
+- 每次 JEPA 更新预测 `30` 个未来动作步
+- 当前周期执行前 `20` 个动作步
+- 剩余 `10` 个动作步与下一次预测结果做前缀融合
 
 ## 数据格式
 
-### 1) NPZ 后端（`--dataset-backend npz`）
+### 1. NPZ 后端
 
 每条 episode 一个 `.npz`。
 
 必需字段：
 
-- `states`: `[T, S]`
-- `actions`: `[T, A]`
-
-可选字段：
-
-- `task_name`
 - `images`: `[T, H, W, 3]`
-- `jepa_visual_tokens`, `dino_tokens`, `vl_features`, `target_future_latent`
+- `states`: `[T, S]`
+- `actions`: `[T_action, A]`
 
-如果缺少预计算特征，会自动回退到图像特征化流程（用于 pipeline 打通）。
+说明：
 
-### 2) LeRobot 后端（`--dataset-backend lerobot`）
+- `actions` 现在按动作步解释，而不是简单按帧解释
+- dataset 会自动在 `JEPA tick` 上构造样本
 
-兼容 Evo-1 风格目录：
+### 2. LeRobot 后端
+
+目录结构：
 
 ```text
 <root>/
@@ -89,29 +123,18 @@
   meta/stats.json
 ```
 
-parquet 至少包含列：
+parquet 至少包含：
 
 - `observation.state`
 - `action`
 
-## 如何使用
+## 如何训练
 
-### 0. 准备环境
+配置文件：
 
-确保安装：
+- [configs/train_vla_metaworld.yaml](/Users/lhy/Desktop/jepavla/configs/train_vla_metaworld.yaml)
 
-- `python>=3.10`
-- `torch`
-- `torchvision`
-- `numpy`, `pandas`, `pyyaml`
-
-在线评测还需要：
-
-- `metaworld`
-
-### 1. 阶段训练
-
-#### Stage A
+### Stage A
 
 ```bash
 python3 train_vla.py \
@@ -121,7 +144,7 @@ python3 train_vla.py \
   --dataset-backend lerobot
 ```
 
-#### Stage B（从 A 继续）
+### Stage B
 
 ```bash
 python3 train_vla.py \
@@ -132,7 +155,7 @@ python3 train_vla.py \
   --resume outputs/stage_a/ckpt_step_0250000.pt
 ```
 
-#### Stage C（从 B 继续）
+### Stage C
 
 ```bash
 python3 train_vla.py \
@@ -143,35 +166,7 @@ python3 train_vla.py \
   --resume outputs/stage_b/ckpt_step_0200000.pt
 ```
 
-### 2. 任务过滤
-
-使用 hard 分组：
-
-```bash
---task-level hard
-```
-
-禁用过滤（全部任务）：
-
-```bash
---task-level all
-```
-
-使用自定义任务列表：
-
-```bash
---hard-tasks-json /path/to/tasks.json
-```
-
-或使用 Evo-1 `mt50_order.json`：
-
-```bash
---task-level hard --mt50-order-json /path/to/mt50_order.json
-```
-
-### 3. 常用调试覆盖参数
-
-快速 smoke test：
+### CPU smoke test
 
 ```bash
 python3 train_vla.py \
@@ -189,9 +184,7 @@ python3 train_vla.py \
   --save-every 2
 ```
 
-## 在线评测（MetaWorld + RTC）
-
-运行：
+## 如何在线评测
 
 ```bash
 python3 eval_metaworld_online.py \
@@ -203,60 +196,43 @@ python3 eval_metaworld_online.py \
   --output-json outputs/eval_hard.json
 ```
 
-说明：
+当前在线评测行为：
 
-- 默认 `H=8, E=4`（每轮执行半个 chunk）
-- 输出 `per_task` 和 `overall` 的 `success_rate / avg_return`
+- 每 `90` 帧刷新一次 VL 特征
+- 每 `10` 帧触发一次 JEPA + RTC 更新
+- 非 JEPA tick 期间继续执行当前 chunk 中尚未消耗的动作
 
-## 当前实现边界
+## 真实 `vjepa2` 接入要求
 
-- 离线训练与在线回放流程已打通。
-- VL/JEPA/DINO 目前是原型化特征接口，便于你替换成真实预训练 backbone。
-- `eval_metaworld_online.py` 里用了轻量特征构造，主要用于在线评测链路验证。
+如果你要把当前 mock runner 换成真实 `vjepa2`，需要修改：
+
+- [vla_model/vjepa2_runner.py](/Users/lhy/Desktop/jepavla/vla_model/vjepa2_runner.py)
+
+目标是让它：
+
+- 加载本地 `vjepa2` 源码或 Python 包
+- 接收 `context_frames`
+- 输出原生 JEPA context / target 表征
+- 保持 backbone / target branch 冻结语义
+
+建议做法：
+
+1. 在 config 里设置 `model.vjepa2.model_name_or_path`
+2. 将 `allow_mock_runner` 改为 `false`
+3. 在 `VJEPA2Runner._build_backend()` 中接入真实实现
+
+在真实后端接入前，不要把当前结果当成原生 `vjepa2` 训练结论。
 
 ## 快速排错
 
-- 报 `No episodes found`：检查 `--dataset-backend` 是否和数据格式匹配。
-- 报 `No valid episodes after filtering`：检查 `--task-level` / `--hard-tasks-json` 过滤条件。
-- online eval 报 `metaworld is not installed`：先安装 `metaworld`。
+- 报 `VJEPA2 model path is not configured`
+  - 说明你关闭了 mock runner，但没有配置真实 `vjepa2`
 
-## Stage C 坍缩问题（已知陷阱）
+- 报 `Native VJEPA2 loading is not yet available in this workspace`
+  - 说明还没有把本地 `vjepa2` 真正接入 [vla_model/vjepa2_runner.py](/Users/lhy/Desktop/jepavla/vla_model/vjepa2_runner.py:1)
 
-### 现象
+- 报 `No valid JEPA tick samples`
+  - 检查 episode 是否足够长，是否满足 `30` 帧窗口和 `30` 动作步 horizon
 
-Stage C 训练到 ~70k 步时，JEPA latent loss 从 0.165 骤降到 0.0004（400x 降幅），此后持续为 ~0.00003。与此同时 flow loss 波动增大，eval flow 从 0.018 恶化到 0.016~0.074。最终模型在 MetaWorld 在线评估中成功率 0%。
-
-### 根因
-
-**Stage C 错误地解冻了 JEPA 骨干投影层。** `train_stages.py` 中 Stage C 代码为：
-
-```python
-else:  # C
-    train_modules = [model]  # 解冻全部模块，包括 jepa_visual_proj / state_proj / action_hist_proj
-```
-
-这三个投影层在 Stage A 和 Stage B 全程冻结，保留了 EvoJEPA 预训练的表征质量。一旦解冻，flow loss 梯度直接作用其上，引发坍缩。
-
-**坍缩是梯度竞争的结果：**
-
-1. Flow head 有 17.2M 参数，JEPA predictor 仅 ~5M，梯度流量不在一个量级
-2. `lambda_jepa_latent=0.02` 意味着 flow loss 权重是 latent loss 的 **50 倍**
-3. Predictor 找到了最小阻力路径：输出 `target_future_latent` 的训练集均值，MSE 接近零
-4. z_jepa 退化为常数后，cond_tokens 只剩下 state token 携带信息，flow head 在盲训
-
-**死亡螺旋**：predictor → 均值 → latent loss 变小 → latent 梯度变小 → 更容易被 flow 梯度拉偏 → 更接近均值 → ...
-
-### 时间线（实测）
-
-| Step | Eval Latent | 阶段 |
-|------|------------|------|
-| 0-20k | 0.209→0.208 | 缓慢下降，正常微调 |
-| 20k-60k | 0.208→0.178 | 加速下降，predictor 开始找捷径 |
-| 60k-70k | 0.178→0.0004 | 灾难性坍缩 |
-| 70k-150k | ~0.00003 | 彻底死亡，不可恢复 |
-
-### 修复方向
-
-1. **冻结 JEPA 骨干投影层**：`jepa_visual_proj`、`state_proj`、`action_hist_proj` 在 Stage C 保持冻结（`requires_grad=False`），只训 predictor + FiLM + cond_encoder + flow_head
-2. **提高 `lambda_jepa_latent`**：从 0.02 提高到 0.1~0.5，让 latent loss 有足够力量抵抗 flow 梯度
-3. 从 Stage B checkpoint 重新启动，不要 resume 已坍缩的 Stage C checkpoint
+- 报 `decode_video=False is not supported`
+  - 当前新 JEPA 主路径需要原始图像窗口，LeRobot 后端必须能读视频

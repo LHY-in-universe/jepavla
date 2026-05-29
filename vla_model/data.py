@@ -1,72 +1,56 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Iterable, Sequence
 
 import torch
 from torch import Tensor
 
 
-@dataclass
+@dataclass(frozen=True)
 class SequenceConfig:
-    frame_history: int = 4  # t-3..t
-    state_history: int = 16
-    action_history: int = 16
-    action_horizon: int = 8
+    jepa_window_frames: int = 30
+    jepa_refresh_frames: int = 10
+    vl_refresh_frames: int = 90
+    actions_per_frame: int = 2
+    action_horizon: int = 30
+    robot_hist_frame_offsets: tuple[int, int, int, int] = (30, 20, 10, 1)
 
 
-def build_no_leak_sample(
-    images: Tensor,
-    states: Tensor,
-    actions: Tensor,
-    t: int,
-    cfg: SequenceConfig,
-) -> Dict[str, Tensor]:
-    """
-    Build one no-leak training sample for control time t.
+def pad_frame_indices(current_t: int, offsets: Sequence[int]) -> list[int]:
+    return [max(0, current_t - int(offset)) for offset in offsets]
 
-    Inputs:
-    - images: [T_total, ...]
-    - states: [T_total, S]
-    - actions: [T_total, A] where actions[k] is executed between k and k+1
 
-    At control time t:
-    - context uses <= t
-    - target predicts t+1..t+H
-    """
-    total = images.shape[0]
-    if states.shape[0] != total or actions.shape[0] != total:
-        raise ValueError("images/states/actions must share first dimension.")
+def action_slice_from_frame_t(current_t: int, horizon: int, actions_per_frame: int) -> slice:
+    start = (current_t + 1) * actions_per_frame
+    end = start + horizon
+    return slice(start, end)
 
-    h_img = cfg.frame_history
-    h_s = cfg.state_history
-    h_a = cfg.action_history
-    h = cfg.action_horizon
 
-    if t < h_img - 1:
-        raise ValueError("t is too small for frame history.")
-    if t < h_s - 1 or t < h_a - 1:
-        raise ValueError("t is too small for state/action history.")
-    if t + h >= total:
-        raise ValueError("Not enough future steps for action target.")
-
-    frame_slice = slice(t - h_img + 1, t + 1)
-    state_slice = slice(t - h_s + 1, t + 1)
-    action_hist_slice = slice(t - h_a + 1, t + 1)
-    target_slice = slice(t + 1, t + 1 + h)
-
-    return {
-        "frames_jepa": images[frame_slice],        # includes current frame
-        "frame_dino": images[t : t + 1],           # current frame only
-        "state_hist": states[state_slice],         # includes current state
-        "action_hist": actions[action_hist_slice], # includes current executed action
-        "target_actions": actions[target_slice],   # strictly future
-    }
+def is_jepa_tick(frame_idx: int, refresh_frames: int) -> bool:
+    return frame_idx >= 0 and (frame_idx + 1) % refresh_frames == 0
 
 
 def collate_samples(samples: list[Dict[str, Tensor]]) -> Dict[str, Tensor]:
     keys = samples[0].keys()
     out: Dict[str, Tensor] = {}
     for k in keys:
-        out[k] = torch.stack([s[k] for s in samples], dim=0)
+        first = samples[0][k]
+        if torch.is_tensor(first):
+            out[k] = torch.stack([s[k] for s in samples], dim=0)
+        else:
+            raise TypeError(f"Unsupported sample value for key `{k}`: {type(first)!r}")
     return out
+
+
+def valid_tick_indices(
+    num_frames: int,
+    num_actions: int,
+    cfg: SequenceConfig,
+) -> Iterable[int]:
+    min_frame = cfg.jepa_window_frames - 1
+    action_frames_needed = (cfg.action_horizon + cfg.actions_per_frame - 1) // cfg.actions_per_frame
+    max_frame = min(num_frames - 1, (num_actions // cfg.actions_per_frame) - action_frames_needed - 1)
+    for t in range(min_frame, max_frame + 1):
+        if is_jepa_tick(t, cfg.jepa_refresh_frames):
+            yield t
