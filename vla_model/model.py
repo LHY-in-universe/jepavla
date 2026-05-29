@@ -105,9 +105,9 @@ class ThinkJEPAVLAModel(nn.Module):
         )
 
     def _default_vl_cond(self, batch: Dict[str, Tensor]) -> Tensor:
-        context = batch["context_frames"]
-        bsz = context.shape[0]
-        return torch.zeros(bsz, 1, self.config.vl_in_dim, device=context.device, dtype=context.dtype)
+        images = batch["sparse_hist_images"]
+        bsz = images.shape[0]
+        return torch.zeros(bsz, 1, self.config.vl_in_dim, device=images.device, dtype=images.dtype)
 
     def _build_cond_tokens(self, z_jepa: Tensor, hist_tokens: Tensor) -> tuple[Tensor, Tensor]:
         hist_summary = self.state_summary(hist_tokens.mean(dim=1))
@@ -123,7 +123,6 @@ class ThinkJEPAVLAModel(nn.Module):
         sample_actions: bool = False,
         num_flow_steps: Optional[int] = None,
     ) -> ModelOutput:
-        context_frames = batch["context_frames"]
         sparse_hist_images = batch["sparse_hist_images"]
         sparse_hist_states = batch["sparse_hist_states"]
         sparse_hist_actions = batch["sparse_hist_actions"]
@@ -131,7 +130,7 @@ class ThinkJEPAVLAModel(nn.Module):
         if vl_cond is None:
             vl_cond = self._default_vl_cond(batch)
 
-        vjepa = self.vjepa2(context_frames)
+        vjepa = self.vjepa2(sparse_hist_images)
         hist_tokens = self.sparse_hist_encoder(sparse_hist_images, sparse_hist_states, sparse_hist_actions)
         predicted_jepa_targets, control_tokens = self.predictor_adapter(vjepa, hist_tokens, vl_cond)
         z_jepa = self.jepa_aggregator(control_tokens, hist_tokens)
