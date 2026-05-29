@@ -15,6 +15,17 @@ EVO1_HARD_TASKS: List[str] = [
     "push-back-v3",
 ]
 
+# Map dataset task descriptions to MetaWorld env slug names.
+# Used to filter episodes by task level when the dataset uses full descriptions.
+DATASET_TASK_TO_SLUG: Dict[str, str] = {
+    "Pick up a nut and place it onto a peg": "nut-assembly-v3",
+    "Insert the gripper into a hole": "hand-insert-v3",
+    "Pick up a puck from a hole": "pick-out-of-hole-v3",
+    "Pick and place a puck to a goal": "pick-place-v3",
+    "Push the puck to a goal": "push-v3",
+    "Push the puck back to a goal": "push-back-v3",
+}
+
 
 def load_evo1_level_tasks(mt50_order_json: str, level: str = "hard") -> List[str]:
     """

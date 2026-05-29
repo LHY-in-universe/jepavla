@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from .data import SequenceConfig, action_slice_from_frame_t, pad_frame_indices, valid_tick_indices
 from .scheduler import ControlScheduler
 from .schema import VLAConfig
+from .task_splits import DATASET_TASK_TO_SLUG
 
 
 def _norm_actions(actions: Tensor, stats: dict, key: str = "action") -> Tensor:
@@ -166,7 +167,13 @@ class LeRobotMetaWorldDataset(Dataset):
     def _scan_episodes(self) -> List[LeRobotEpisodeRef]:
         refs = self._episode_iter()
         if self.cfg.hard_tasks:
-            refs = [r for r in refs if r.task_name in self.cfg.hard_tasks]
+            hard_set = set(self.cfg.hard_tasks)
+            matched = []
+            for r in refs:
+                slug = DATASET_TASK_TO_SLUG.get(r.task_name, r.task_name)
+                if slug in hard_set:
+                    matched.append(r)
+            refs = matched
         if self.cfg.max_episodes is not None:
             refs = refs[: self.cfg.max_episodes]
         if not refs:
