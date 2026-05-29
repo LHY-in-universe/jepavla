@@ -118,13 +118,23 @@ class LeRobotMetaWorldDataset(Dataset):
             for tid, tname in self.task_map.items():
                 task_name_to_idx[tname] = tid
 
+            # Pre-scan all available chunks for fast parquet lookup
+            chunk_dirs: dict[int, str] = {}
+            for cd in sorted(self.data_dir.glob("chunk-*")):
+                for p in cd.glob("episode_*.parquet"):
+                    try:
+                        eid = int(p.stem.split("_")[-1])
+                        chunk_dirs[eid] = cd.name
+                    except ValueError:
+                        pass
+
             with meta_path.open("r", encoding="utf-8") as f:
                 for line in f:
                     if not line.strip():
                         continue
                     obj = json.loads(line)
                     episode_id = int(obj.get("episode_index", obj.get("episode_id", obj.get("id", -1))))
-                    chunk = str(obj.get("chunk", "chunk-000"))
+                    chunk = chunk_dirs.get(episode_id, str(obj.get("chunk", "chunk-000")))
                     parquet = self.data_dir / chunk / f"episode_{episode_id:06d}.parquet"
                     if not parquet.exists():
                         continue
