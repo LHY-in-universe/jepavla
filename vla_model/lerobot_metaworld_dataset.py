@@ -112,18 +112,27 @@ class LeRobotMetaWorldDataset(Dataset):
         meta_path = self.meta_dir / "episodes.jsonl"
         refs: List[LeRobotEpisodeRef] = []
         if meta_path.exists():
+            # Build reverse map: task_name → task_index
+            task_name_to_idx: dict[str, int] = {}
+            for tid, tname in self.task_map.items():
+                task_name_to_idx[tname] = tid
+
             with meta_path.open("r", encoding="utf-8") as f:
                 for line in f:
                     if not line.strip():
                         continue
                     obj = json.loads(line)
-                    episode_id = int(obj.get("episode_id", obj.get("id", -1)))
+                    episode_id = int(obj.get("episode_index", obj.get("episode_id", obj.get("id", -1))))
                     chunk = str(obj.get("chunk", "chunk-000"))
                     parquet = self.data_dir / chunk / f"episode_{episode_id:06d}.parquet"
                     if not parquet.exists():
                         continue
-                    task_idx = int(obj.get("task_index", -1))
-                    task_name = self.task_map.get(task_idx, "unknown")
+                    tasks_arr = obj.get("tasks", None)
+                    if tasks_arr is not None and isinstance(tasks_arr, list) and len(tasks_arr) > 0:
+                        task_name = str(tasks_arr[0])
+                    else:
+                        task_idx = int(obj.get("task_index", -1))
+                        task_name = self.task_map.get(task_idx, "unknown")
                     num_frames = int(obj.get("length", obj.get("num_steps", -1)))
                     refs.append(
                         LeRobotEpisodeRef(
