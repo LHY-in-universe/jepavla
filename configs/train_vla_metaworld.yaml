@@ -36,7 +36,7 @@ model:
   use_dino: false
   scheduler:
     fps: 30
-    actions_per_frame: 2
+    actions_per_frame: 1
     vl_refresh_frames: 90
     jepa_refresh_frames: 10
     jepa_window_frames: 30
