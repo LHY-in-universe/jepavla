@@ -47,7 +47,7 @@ model:
     dtype: bf16
     freeze_backbone: true
     freeze_target: true
-    allow_mock_runner: true
+    allow_mock_runner: false
 runtime:
   device: cuda
   eval_batches: 50
