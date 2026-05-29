@@ -3,7 +3,7 @@ dataset:
   lerobot:
     action_key: action
     decode_video: true
-    episode_cache_size: 8
+    episode_cache_size: 128
     frame_key: observation.images.image
     states_key: observation.state
     use_stats_norm: true
@@ -53,7 +53,7 @@ runtime:
   eval_batches: 50
   grad_clip_norm: 1.0
   log_every: 100
-  num_workers: 1
+  num_workers: 4
   outdir: outputs
   precision: bf16
   save_every: 5000
